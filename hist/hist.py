@@ -2,55 +2,57 @@ import struct
 import rsb_event_pb2
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 
-with open("/home/dymasus/rsb_parser/data/p44(30s)(HV1=16800).df", "rb") as f:
-    # Читаем бинарный заголовок (30 байт)
-    header = f.read(30)
-    # Распаковываем metaLength (uint32, big endian, смещение 14)
-    metaLength = struct.unpack(">I", header[14:18])[0]
-    # Распаковываем dataLength (uint64, big endian, смещение 18)
-    dataLength = struct.unpack(">Q", header[18:26])[0]
-    # Читаем метаданные
-    meta = f.read(metaLength)
-    # Читаем основной блок данных
-    data = f.read(dataLength)
-    # Парсим protobuf
-    point = rsb_event_pb2.Point()
-    point.ParseFromString(data)
+# Функция для чтения и парсинга файла
+def parse_rsb_file(file_path):
+    with open(file_path, "rb") as f:
+        header = f.read(30)
+        meta_length = struct.unpack(">I", header[14:18])[0]
+        data_length = struct.unpack(">Q", header[18:26])[0]
+        meta = f.read(meta_length)
+        data = f.read(data_length)
+        point = rsb_event_pb2.Point()
+        point.ParseFromString(data)
+    return point
 
+# Функция для извлечения амплитуд (максимальных значений в каждом фрейме)
+def extract_amplitudes(point):
+    channel_amplitudes = {}
+    for ch in point.channels:
+        amplitudes = []
+        for block in ch.blocks:
+            for frame in block.frames:
+                arr = np.frombuffer(frame.data, dtype=np.int16)
+                amplitudes.append(np.abs(arr).max())
+        channel_amplitudes[ch.id] = amplitudes
+    return channel_amplitudes
 
-# Сохраняем распарсенный объект в текстовом виде
-with open("python_out.txt", "w", encoding="utf-8") as out:
-    out.write(str(point))
+# Функция для построения гистограммы по каналам
+def plot_channel_histograms(channel_amplitudes, bins=100, range=(0, 8000)):
+    plt.figure(figsize=(12, 6))
+    colors = plt.cm.get_cmap('tab10', len(channel_amplitudes))
+    
+    # Построение гистограмм для каждого канала
+    for i, (channel_id, amplitudes) in enumerate(channel_amplitudes.items()):
+        plt.hist(amplitudes, bins=bins, range=range, 
+                alpha=0.6, color=colors(i),
+                edgecolor='black', linewidth=0.5,
+                label=f'Канал {channel_id}')
+    
+    plt.title('Распределение амплитуд по каналам')
+    plt.xlabel('Амплитуда (по модулю)')
+    plt.ylabel('Частота')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.show()
 
-# Словарь: channel_id -> (список номеров фреймов, список амплитуд)
-channel_data = {}
-
-for ch in point.channels:
-    ch_id = ch.id  # реальный id канала
-    frame_numbers = []
-    amplitudes = []
-    frame_idx = 0
-    for block in ch.blocks:
-        for frame in block.frames:
-            arr = np.frombuffer(frame.data, dtype=np.int16)
-            max_amp = np.abs(arr).max()  # максимум по модулю
-            frame_numbers.append(frame_idx)
-            amplitudes.append(max_amp)
-            frame_idx += 1
-    channel_data[ch_id] = (frame_numbers, amplitudes)
-
-# Цвета для разных каналов 
-colors = ['blue', 'green', 'red', 'orange', 'purple', 'cyan', 'magenta', 'brown', 'gray', 'olive']
-
-plt.figure(figsize=(12, 6))
-for idx, (ch_id, (frame_numbers, amplitudes)) in enumerate(channel_data.items()):
-    plt.plot(frame_numbers, amplitudes, '.', color=colors[idx % len(colors)], label=f'Канал {ch_id}')
-
-plt.title("Амплитуда фрейма (максимум по модулю) по номеру фрейма")
-plt.xlabel("Номер фрейма")
-plt.ylabel("Амплитуда (максимум по модулю)")
-plt.legend()
-plt.grid(True)
-plt.show()
+if __name__ == "__main__":
+    # Парсинг файла
+    file_path = "/home/rsb_parser/data/p44(30s)(HV1=16800).df"
+    point = parse_rsb_file(file_path)
+    
+    # Извлечение амплитуд
+    channel_amplitudes = extract_amplitudes(point)
+    
+    # Построение гистограмм
+    plot_channel_histograms(channel_amplitudes)
