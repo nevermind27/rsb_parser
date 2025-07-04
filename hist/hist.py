@@ -20,15 +20,20 @@ def extract_amplitudes(point):
     channel_amplitudes = {}
     for ch in point.channels:
         amplitudes = []
+        frame_count = 0
         for block in ch.blocks:
             for frame in block.frames:
                 arr = np.frombuffer(frame.data, dtype=np.int16)
-                amplitudes.append(np.abs(arr).max())
+                max_amp = np.abs(arr).max()
+                amplitudes.append(max_amp)
+                frame_count += 1
+        
         channel_amplitudes[ch.id] = amplitudes
+    
     return channel_amplitudes
 
 # Функция для построения гистограммы по каналам
-def plot_channel_histograms(channel_amplitudes, bins=100, range=(0, 8000)):
+def plot_channel_histograms(channel_amplitudes, bins=100, range=(0, 8192)):
     plt.figure(figsize=(12, 6))
     colors = plt.cm.get_cmap('tab10', len(channel_amplitudes))
     
