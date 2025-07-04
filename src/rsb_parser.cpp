@@ -7,20 +7,9 @@
 #include <bit>
 #include "byteswap.h"
 #include "rsb_event.pb.h"
-/* From documentation http://npm.mipt.ru/dataforge/docs.html#envelope_format
-The default envelope format is developed for storage of binary data or transferring data via byte stream. The structure of this format is the following:
+#include <sstream>
 
-Tag. First 20 bytes of file or stream is reserved for envelope properties binary representation:
 
-#~ - two ASCII symbols, beginning of binary string.
-4 bytes - properties type field: envelope format type and version. For default format the string DF02 is used, but in principle other envelope types could use the same format.
-2 bytes - properties metaType field: metadata encoding type.
-4 bytes - properties metaLength field: metadata length in bytes including new lines and other separators.
-4 bytes - properties dataLength field: the data length in bytes.
-~# - two ASCII symbols, end of binary string.
-\r\n - two bytes, new line.
-The values are read as binary and transformed into 4-byte unsigned tag codes (Big endian).
-*/
 #pragma pack(push, 1)
 struct EnvelopeHeader {
     char start[2];
@@ -40,12 +29,40 @@ bool check_signature(const EnvelopeHeader& h) {
         h.end[2] == '\r' && h.end[3] == '\n';
 }
 
-int main() { 
-    // 
+// Функция для красивого вывода массива int16_t
+std::string format_int16_array(const int16_t* data, size_t n, int per_line = 10, int indent = 0) {
+    std::ostringstream oss;
+    std::string pad(indent, ' ');
+    for (size_t i = 0; i < n; ++i) {
+        if (i % per_line == 0) oss << pad;
+        oss << data[i];
+        if (i + 1 < n) oss << ", ";
+        if ((i + 1) % per_line == 0) oss << "\n";
+    }
+    if (n % per_line != 0) oss << "\n";
+    return oss.str();
+}
 
-    std::ifstream file("/home/dymasus/rsb_parser/p44(30s)(HV1=16800).df", std::ios::binary);
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Необходимо указать имя файла для разбора!\n";
+        std::cerr << "Пример использования: " << argv[0] << " input.df [output.txt]\n";
+        return 1;
+    }
+    std::string input_filename = argv[1];
+    std::string output_filename = "output.txt";
+    if (argc > 2) {
+        output_filename = argv[2];
+    }
+    std::ofstream out(output_filename);
+    if (!out) {
+        std::cerr << "Ошибка открытия файла для вывода: " << output_filename << std::endl;
+        return 1;
+    }
+
+    std::ifstream file(input_filename, std::ios::binary);
     if (!file) {
-        std::cerr << "Error opening file.\n";
+        std::cerr << "Error opening file: " << input_filename << std::endl;
         return 1;
     }
 
@@ -61,17 +78,17 @@ int main() {
         return 1;
     }
     std::string version_str(header.version, 4);
-    std::cout << "Version: " << version_str << "\n";  // на тестовом df файле байты 00 01 40 00, что не соответствует DF02 в ASCII 
+    // Краткая сводка в консоль
+    std::cout << "Версия: " << version_str << std::endl;
     header.junk1 = from_big_endian(header.junk1);
     header.metaFormatKey = from_big_endian(header.metaFormatKey);
     header.junk2 = from_big_endian(header.junk2);
     header.metaLength = from_big_endian(header.metaLength);
     header.dataLength = from_big_endian(header.dataLength);
 
-
-    std::cout << "metaFormatKey: " << header.metaFormatKey << "\n";
-    std::cout << "metaLength: " << header.metaLength << "\n";
-    std::cout << "dataLength: " << header.dataLength << "\n";
+    std::cout << "metaFormatKey: " << header.metaFormatKey << std::endl;
+    std::cout << "metaLength: " << header.metaLength << std::endl;
+    std::cout << "dataLength: " << header.dataLength << std::endl;
 
     // Чтение метаданных
     std::vector<char> meta(header.metaLength);
@@ -97,17 +114,42 @@ int main() {
         return 1;
     }
 
-    // Пример вывода
-    std::cout << "Прочитано " << point.channels_size() << " каналов" << std::endl;
-    for (const auto& channel : point.channels()) {
-        std::cout << "Канал ID: " << channel.id() << std::endl;
-        for (const auto& block : channel.blocks()) {
-            std::cout << "  Block time: " << block.time()
-                      << ", length: " << block.length()
-                      << ", bin_size: " << block.bin_size()
-                      << std::endl;
+    out << "Прочитано " << point.channels_size() << " каналов\n";
+    for (int ch_idx = 0; ch_idx < point.channels_size(); ++ch_idx) {
+        const auto& channel = point.channels(ch_idx);
+        out << "Канал ID: " << channel.id() << "\n";
+        for (int blk_idx = 0; blk_idx < channel.blocks_size(); ++blk_idx) {
+            const auto& block = channel.blocks(blk_idx);
+            out << "  ├─ Блок " << blk_idx << ": время=" << block.time()
+                << ", длительность=" << block.length()
+                << ", размер бина=" << block.bin_size() << "\n";
+            // Сырые события (frames)
+            out << "  │   ├─ Сырых событий: " << block.frames_size() << "\n";
+            for (int fr_idx = 0; fr_idx < block.frames_size(); ++fr_idx) {
+                const auto& frame = block.frames(fr_idx);
+                out << "  │   │   ├─ Frame " << fr_idx << ": время=" << frame.time();
+                const std::string& data_bytes = frame.data();
+                size_t n_values = data_bytes.size() / sizeof(int16_t);
+                out << ", размер данных=" << data_bytes.size() << " байт\n";
+                if (n_values > 0) {
+                    const int16_t* data_ptr = reinterpret_cast<const int16_t*>(data_bytes.data());
+                    out << format_int16_array(data_ptr, n_values, 10, 18);
+                }
+            }
+            // Обработанные события (events)
+            if (block.has_events()) {
+                const auto& events = block.events();
+                int n_events = std::min(events.times_size(), events.amplitudes_size());
+                out << "  │   └─ Обработанных событий: " << n_events << "\n";
+                for (int ev_idx = 0; ev_idx < n_events; ++ev_idx) {
+                    out << "  │       ├─ Событие " << ev_idx << ": время=" << events.times(ev_idx)
+                        << ", амплитуда=" << events.amplitudes(ev_idx) << "\n";
+                }
+            }
         }
+        out << "------------------------------------------------------------\n";
     }
-
+    out << "\nГотово. Всего каналов: " << point.channels_size() << std::endl;
+    std::cout << "Детальный вывод сохранён в " << output_filename << std::endl;
     return 0;
 }
